@@ -1,0 +1,3 @@
+spam
+badword
+another_bad

@@ -88,6 +88,28 @@ services:
       - kafka-2
       - kafka-3
 
+  user_cli:
+    build:
+      context: ./services/user_messenger
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: python service.py
+    stop_grace_period: 15s
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      TOPIC_REGISTERED_USERS: registered_users
+      TOPIC_MESSAGES: messages
+      TOPIC_BLOCKED_USERS: blocked_users
+      TOPIC_BLOCKED_WORDS: blocked_words
+      TOPIC_FILTERED_MESSAGES: filtered_messages
+    networks:
+      - kafka-net
+    deploy:
+      replicas: 1
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
 
 networks:
   kafka-net:

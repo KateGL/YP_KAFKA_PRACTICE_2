@@ -1,4 +1,4 @@
-.PHONY: up up-infra down reset status create-topic describe-topic list-topics delete-topic restart-apps restart-ui
+.PHONY: load-blocked-words up up-infra down reset status create-topic describe-topic list-topics delete-topic restart-ui init-topics check-topics restart-apps reset-apps down-apps up-apps
 
 # Явно указываем имя файла — так точно не будет ошибок с пустым именем
 COMPOSE_FILE := docker-compose.yaml
@@ -101,3 +101,75 @@ delete-topic: check-cluster
 		--bootstrap-server "$(BOOTSTRAP_SERVERS)" \
 		--delete \
 		--topic "$(TOPIC)"
+
+# Список всех топиков, нужных для приложения
+TOPICS_REQUIRED := registered_users messages blocked_users blocked_words filtered_messages
+
+# Цель: создать все необходимые топики сразу
+init-topics: check-cluster
+	@echo "✨ Инициализация всех необходимых топиков..."
+	@for topic in $(TOPICS_REQUIRED); do \
+		echo "  → Создание топика: $$topic"; \
+		docker exec "$(KAFKA_CONTAINER)" kafka-topics \
+			--bootstrap-server "$(BOOTSTRAP_SERVERS)" \
+			--create \
+			--topic "$$topic" \
+			--partitions "$(PARTITIONS)" \
+			--replication-factor "$(REPLICATION_FACTOR)" \
+			--config min.insync.replicas="$(REPLICATION_FACTOR)" \
+			--if-not-exists; \
+	done
+	@echo "✅ Все топики инициализированы."
+
+# цель для проверки, все ли топики на месте
+check-topics: check-cluster
+	@echo "🔍 Проверка наличия всех требуемых топиков..."
+	@missing=0; \
+	for topic in $(TOPICS_REQUIRED); do \
+		echo "   📋 Проверяю: $$topic"; \
+		if ! docker exec "$(KAFKA_CONTAINER)" kafka-topics \
+			--bootstrap-server "$(BOOTSTRAP_SERVERS)" \
+			--list \
+			| grep -Fxq "$$topic"; then \
+			echo "   ❌ Отсутствует: $$topic"; \
+			missing=1; \
+		else \
+			echo "   ✅ Есть: $$topic"; \
+		fi; \
+	done; \
+	if [ "$$missing" -eq 1 ]; then exit 1; fi; \
+	echo "✅ Все топики найдены."
+
+# Перезапуск без пересборки (быстро, но не подхватывает новый код)
+restart-apps:
+	@echo "🔄 Перезапуск продюсера и консьюмеров (без пересборки образов)..."
+	docker compose -f $(COMPOSE_FILE) restart user_cli  || true
+
+down-apps:
+	@echo "🛑 Остановка user_cli..."
+	docker compose -f $(COMPOSE_FILE) down user_cli
+
+up-apps:
+	@echo "🚀 Запуск user_cli (без пересборки)..."
+	docker compose -f $(COMPOSE_FILE) up -d user_cli
+
+reset-apps:
+	@echo "🔁 Полный сброс user_cli: stop + rebuild + start..."
+	docker compose -f $(COMPOSE_FILE) down user_cli
+	docker compose -f $(COMPOSE_FILE) up --build -d user_cli
+
+BLOCKED_WORDS_FILE ?= blocked_words.txt
+TOPIC_BLOCKED_WORDS ?= blocked_words
+KAFKA_BOOTSTRAP_SERVERS ?= kafka-1:9092
+
+load-blocked-words:
+	@echo "📦 Загрузка слов из $(BLOCKED_WORDS_FILE) в топик $(TOPIC_BLOCKED_WORDS)..."
+	docker compose run --rm \
+		-e KAFKA_BOOTSTRAP_SERVERS=$(KAFKA_BOOTSTRAP_SERVERS) \
+		-e PYTHONPATH=/app \
+		-v "$$(pwd)/scripts:/scripts" \
+		-v "$$(pwd):/app" \
+		-v "$$(pwd)/$(BLOCKED_WORDS_FILE):/data/words.txt" \
+		user_cli python /scripts/load_blocked_words.py \
+		--file /data/words.txt \
+		--topic $(TOPIC_BLOCKED_WORDS)
