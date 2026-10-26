@@ -1,35 +1,38 @@
+import faust
 import json
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
 
-@dataclass
-class MessagePayload:
+
+class BaseMessagePayload(faust.Record):
     user_id: str
     timestamp: int
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self))
+        return json.dumps(self.asdict())
 
     @staticmethod
-    def from_json(data: str) -> "MessagePayload":
+    def from_json(data: str) -> "BaseMessagePayload":
         try:
             obj = json.loads(data)
-            return MessagePayload(**obj)
+            return BaseMessagePayload(**obj)
         except Exception as e:
             raise ValueError(f"Ошибка десериализации JSON: {e}")
 
 
-@dataclass
-class UserRegisteredMessage(MessagePayload):
+
+class UserRegisteredMessage(BaseMessagePayload):
     event: str
 
 
-@dataclass
-class UserBlockMessage(MessagePayload):
+class UserBlockMessage(BaseMessagePayload):
     event: str
     target_user_id: str
 
-@dataclass
-class WordBlockMessage(MessagePayload):
+
+class WordBlockMessage(BaseMessagePayload):
     event: str
     word:str
+
+
+class MessageForChatting(BaseMessagePayload):
+    target_user_id: str
+    text: str

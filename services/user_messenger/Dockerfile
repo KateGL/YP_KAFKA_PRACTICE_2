@@ -15,6 +15,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY service.py .
 COPY messages.py .
-# __init__.py больше не нужен
 
 CMD ["python", "service.py"]

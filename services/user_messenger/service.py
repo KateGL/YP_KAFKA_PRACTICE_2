@@ -9,7 +9,7 @@ from typing import Optional
 
 from confluent_kafka import Producer, Consumer, KafkaException, KafkaError
 
-from messages import MessagePayload, UserRegisteredMessage, UserBlockMessage, WordBlockMessage
+from messages import MessageForChatting, UserRegisteredMessage, UserBlockMessage, WordBlockMessage
 
 # --- Конфигурация из переменных окружения (Vault/Consul/K8s) ---
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-1:9092,kafka-2:9092,kafka-3:9092")
@@ -48,7 +48,7 @@ def delivery_report(err, msg):
 
 
 
-def send_event(topic: str, key: str, message: MessagePayload):
+def send_event(topic: str, key: str, message: MessageForChatting):
     """Идемпотентная отправка события: ключ — user_id или слово, значение — событие."""
     try:
         producer.produce(
@@ -141,22 +141,6 @@ def cmd_logout(args):
         )
     )
 
-class MessagePayloadSimple(MessagePayload):
-    # Если у тебя нет отдельного типа для обычных сообщений, можно сделать простой обёрткой.
-    # Или лучше — привести все сообщения к одному формату через базовый класс.
-    def __init__(self, from_user, to_user, message, timestamp):
-        self.from_user = from_user
-        self.to_user = to_user
-        self.message = message
-        self.timestamp = timestamp
-
-    def to_json(self):
-        return json.dumps({
-            "from": self.from_user,
-            "to": self.to_user,
-            "message": self.message,
-            "timestamp": self.timestamp,
-        })
 
 def cmd_send_message(args):
     if state.current_user is None:
@@ -167,10 +151,10 @@ def cmd_send_message(args):
         return
 
     user_to, message = args
-    payload = MessagePayloadSimple(
-        from_user=state.current_user,
-        to_user=user_to,
-        message=message,
+    payload = MessageForChatting(
+        user_id=state.current_user,
+        target_user_id=user_to,
+        text=message,
         timestamp=int(time.time())
     )
     send_event(TOPIC_MESSAGES, key=state.current_user, message=payload)
@@ -189,7 +173,7 @@ def _block_unblock_user(args: list, block: bool):
 
     send_event(
         TOPIC_BLOCKED_USERS,
-        key=state.current_user,
+        key=f"{state.current_user}|{target}",
         message=UserBlockMessage(
             event=event,
             user_id=state.current_user,

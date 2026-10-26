@@ -26,7 +26,7 @@ up:
 up-infra:
 	@echo "🚀 Запуск инфраструктуры (Kafka + Zookeeper + kafka-ui) без приложений..."
 	# Теперь kafka-ui стартует вместе с брокерами
-	docker compose -f $(COMPOSE_FILE) up --build -d kafka-1 kafka-2 kafka-3 zookeeper-1 kafka-ui
+	docker compose -f $(COMPOSE_FILE) up --build -d kafka-1 kafka-2 kafka-3 zookeeper-1 ksqldb-server kafka-ui
 
 down:
 	@echo "🛑 Остановка всего кластера и приложений..."
@@ -143,20 +143,20 @@ check-topics: check-cluster
 # Перезапуск без пересборки (быстро, но не подхватывает новый код)
 restart-apps:
 	@echo "🔄 Перезапуск продюсера и консьюмеров (без пересборки образов)..."
-	docker compose -f $(COMPOSE_FILE) restart user_cli  || true
+	docker compose -f $(COMPOSE_FILE) restart user_cli message_processor || true
 
 down-apps:
 	@echo "🛑 Остановка user_cli..."
-	docker compose -f $(COMPOSE_FILE) down user_cli
+	docker compose -f $(COMPOSE_FILE) down user_cli message_processor
 
 up-apps:
 	@echo "🚀 Запуск user_cli (без пересборки)..."
-	docker compose -f $(COMPOSE_FILE) up -d user_cli
+	docker compose -f $(COMPOSE_FILE) up -d user_cli message_processor
 
 reset-apps:
 	@echo "🔁 Полный сброс user_cli: stop + rebuild + start..."
-	docker compose -f $(COMPOSE_FILE) down user_cli
-	docker compose -f $(COMPOSE_FILE) up --build -d user_cli
+	docker compose -f $(COMPOSE_FILE) down user_cli message_processor
+	docker compose -f $(COMPOSE_FILE) up --build -d user_cli message_processor
 
 BLOCKED_WORDS_FILE ?= blocked_words.txt
 TOPIC_BLOCKED_WORDS ?= blocked_words

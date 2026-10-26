@@ -19,6 +19,8 @@ services:
       # Какой слушатель отдавать клиентам (для продюсеров/консьюмеров внутри Docker)
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,PLAINTEXT_HOST://host.docker.internal:29092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
     depends_on:
       - zookeeper-1
     networks:
@@ -37,6 +39,8 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,PLAINTEXT_HOST://host.docker.internal:29093
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
     depends_on:
       - zookeeper-1
     networks:
@@ -55,6 +59,8 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092,PLAINTEXT_HOST://host.docker.internal:29094
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
     depends_on:
       - zookeeper-1
     networks:
@@ -70,6 +76,28 @@ services:
     networks:
       - kafka-net
 
+  # --- ksqlDB Server
+  ksqldb-server:
+    image: confluentinc/ksqldb-server:0.28.2
+    hostname: ksqldb-server
+    container_name: ksqldb-server
+    ports:
+      - "8088:8088"          # REST API + UI редактора ksqlDB
+      - "8083:8083"          # (опционально) для коннекторов, если будешь подключать
+    environment:
+      KSQL_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KSQL_HOST_NAME: ksqldb-server
+      KSQL_LISTENERS: "http://0.0.0.0:8088"
+      KSQL_CACHE_MAX_BYTES_BUFFERING: 0
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: "true"
+      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: "true"
+      # KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+    networks:
+      - kafka-net
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
 
   kafka-ui:
     image: provectuslabs/kafka-ui:v0.7.0
@@ -81,19 +109,22 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       DYNAMIC_CONFIG_ENABLED: "true"
+      # Интеграция с ksqlDB: Kafka UI будет знать о ksqlDB и сможет показывать связанные топики
+      KAFKA_CLUSTERS_0_KSQLDBSERVER: http://ksqldb-server:8088
+      # KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
     networks:
       - kafka-net
     depends_on:
       - kafka-1
       - kafka-2
       - kafka-3
+      - ksqldb-server
 
   user_cli:
     build:
       context: ./services/user_messenger
       dockerfile: Dockerfile
     working_dir: /app
-    command: python service.py
     stop_grace_period: 15s
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
@@ -110,6 +141,31 @@ services:
       - kafka-1
       - kafka-2
       - kafka-3
+      - ksqldb-server
+
+  message_processor:
+    build:
+      context: ./services/message_processor
+      dockerfile: Dockerfile
+    working_dir: /app
+    stop_grace_period: 15s
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      TOPIC_REGISTERED_USERS: registered_users
+      TOPIC_MESSAGES: messages
+      TOPIC_BLOCKED_USERS: blocked_users
+      TOPIC_BLOCKED_WORDS: blocked_words
+      TOPIC_FILTERED_MESSAGES: filtered_messages
+      TOPIC_PARTITIONS_COUNT: 3
+    networks:
+      - kafka-net
+    deploy:
+      replicas: 1
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+      - ksqldb-server
 
 networks:
   kafka-net:
