@@ -1,69 +1,15 @@
-import os
-import re
-import json
+import sys
 import signal
 import threading
 import time
-from dataclasses import dataclass
-from typing import Optional
 
-from confluent_kafka import Producer, Consumer, KafkaException, KafkaError
+from confluent_kafka import Consumer
 
-from messages import MessageForChatting, UserRegisteredMessage, UserBlockMessage, WordBlockMessage
+from consts import BOOTSTRAP_SERVERS, TOPIC_FILTERED_MESSAGES
+from commands import COMMANDS, flush_producer, parse_command, producer
+from messages import MessageForChatting
 
-# --- Конфигурация из переменных окружения (Vault/Consul/K8s) ---
-BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-1:9092,kafka-2:9092,kafka-3:9092")
-TOPIC_REGISTERED_USERS = os.getenv("TOPIC_REGISTERED_USERS", "registered_users")
-TOPIC_MESSAGES = os.getenv("TOPIC_MESSAGES", "messages")
-TOPIC_BLOCKED_USERS = os.getenv("TOPIC_BLOCKED_USERS", "blocked_users")
-TOPIC_BLOCKED_WORDS = os.getenv("TOPIC_BLOCKED_WORDS", "blocked_words")
-TOPIC_FILTERED_MESSAGES = os.getenv("TOPIC_FILTERED_MESSAGES", "filtered_messages")
-
-@dataclass
-class AppState:
-    current_user: Optional[str] = None
-
-
-state = AppState()
-
-# --- Producer ---
-producer_config = {
-    "bootstrap.servers": BOOTSTRAP_SERVERS,
-    "acks": "all",                 # гарантия доставки
-    "retries": 3,
-    "retry.backoff.ms": 100,
-}
-producer = Producer(producer_config)
-
-def delivery_report(err, msg):
-    payload = None
-    try:
-        payload = json.loads(msg.value().decode("utf-8"))
-    except Exception:
-        pass
-
-    event_type = payload.get("event") if payload else "UNKNOWN"
-    topic = msg.topic()
-    print(f"✅ Подтверждено: event={event_type} | топик={topic} | partition={msg.partition()} | offset={msg.offset()}")
-
-
-
-def send_event(topic: str, key: str, message: MessageForChatting):
-    """Идемпотентная отправка события: ключ — user_id или слово, значение — событие."""
-    try:
-        producer.produce(
-            topic=topic,
-            key=key,
-            value=message.to_json(),
-            callback=delivery_report
-        )
-    except KafkaException as e:
-        print(f"⚠️ Ошибка продюсера: {e}")
-
-def flush_producer():
-    producer.flush(timeout=10)
-
-# --- Consumer для filtered_messages ---
+# --- Consumer для filtered_messages
 def consumer_loop():
     consumer_config = {
         "bootstrap.servers": BOOTSTRAP_SERVERS,
@@ -75,172 +21,41 @@ def consumer_loop():
     consumer = Consumer(consumer_config)
     consumer.subscribe([TOPIC_FILTERED_MESSAGES])
 
-    while not shutdown_flag.is_set():
-        msg = consumer.poll(timeout=1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
+    try:
+        while not shutdown_flag.is_set():
+            msg = consumer.poll(timeout=0.5)
+            if msg is None:
                 continue
-            print(f"Consumer error: {msg.error()}")
-            continue
-
-        try:
-            data = json.loads(msg.value().decode("utf-8"))
-            # Выводим сообщение в консоль
-            print(f"[filtered_messages] offset={msg.offset()} | {data}")
-        except Exception as e:
-            print(f"Ошибка парсинга сообщения: {e}, raw={msg.value()}")
-
-        # Коммитим офсет вручную
-        consumer.commit(asynchronous=False)
-
-    consumer.close()
-
-# --- Команды CLI ---
-def cmd_login(args):
-    if len(args) != 1:
-        print("Usage: login(user_name)")
-        return
-
-    user_name = args[0]
-
-    if state.current_user is not None and state.current_user != user_name:
-        print(f"❌ Нельзя залогиниться как {user_name}, пока активен {state.current_user}. Сначала выполните logout().")
-        return
-
-    state.current_user = user_name
-    print(f"Logged in as: {user_name}")
-
-    send_event(
-        TOPIC_REGISTERED_USERS,
-        key=user_name,
-        message=UserRegisteredMessage(
-            event="LOGIN",
-            user_id=user_name,
-            timestamp=int(time.time()),
-        )
-    )
-
-def cmd_logout(args):
-    if state.current_user is None:
-        print("No active user session.")
-        return
-
-    user_name = state.current_user
-    state.current_user = None
-    print("Logged out.")
-
-    send_event(
-        TOPIC_REGISTERED_USERS,
-        key=user_name,
-        message=UserRegisteredMessage(
-            event="LOGOUT",
-            user_id=user_name,
-            timestamp=int(time.time()),
-        )
-    )
+            if msg.error():
+                print(f"⚠️ Ошибка сообщения: {msg.error()}")
+                continue
 
 
-def cmd_send_message(args):
-    if state.current_user is None:
-        print("You must be logged in to send a message.")
-        return
-    if len(args) != 2:
-        print("Usage: send_message(user_to, message)")
-        return
+            try:
+                payload = MessageForChatting.from_json(msg.value().decode("utf-8"))
+            except Exception as e:
+                print(f"❌ Ошибка сериализации/обработки: {e}")
+                # продолжаем работать, не прерываем цикл
+                continue
 
-    user_to, message = args
-    payload = MessageForChatting(
-        user_id=state.current_user,
-        target_user_id=user_to,
-        text=message,
-        timestamp=int(time.time())
-    )
-    send_event(TOPIC_MESSAGES, key=state.current_user, message=payload)
-    print(f"Message sent to {user_to}")
+            ts = payload.timestamp
+            time_str = time.strftime("%H:%M:%S", time.localtime(ts))
 
-def _block_unblock_user(args: list, block: bool):
-    if state.current_user is None:
-        print("You must be logged in.")
-        return
-    if len(args) != 1:
-        print("Usage: block_user_for_me(user) / unblock_user_for_me(user)")
-        return
+            # Важно: печатаем с \n в начале, чтобы не сливалось с приглашением >
+            print(f"\n📩 [{time_str}] {payload.user_id} → {payload.target_user_id}: {payload.text}")
 
-    target = args[0]
-    event = "BLOCK" if block else "UNBLOCK"
+            consumer.commit(asynchronous=False)
 
-    send_event(
-        TOPIC_BLOCKED_USERS,
-        key=f"{state.current_user}|{target}",
-        message=UserBlockMessage(
-            event=event,
-            user_id=state.current_user,
-            target_user_id=target,
-            timestamp=int(time.time()),
-        )
-    )
-
-def _block_unblock_word(args: list, block: bool):
-    if state.current_user is None:
-        print("You must be logged in.")
-        return
-    if len(args) != 1:
-        print("Usage: block_user_for_me(user) / unblock_user_for_me(user)")
-        return
-
-    target = args[0]
-    event = "BLOCK" if block else "UNBLOCK"
-
-    send_event(
-        TOPIC_BLOCKED_WORDS,
-        key=state.current_user,
-        message=WordBlockMessage(
-            event=event,
-            user_id=state.current_user,
-            word=target,
-            timestamp=int(time.time()),
-        )
-    )
+    except Exception as e:
+        print(f"💥 Непредвиденная ошибка: {e}", file=sys.stderr)
+    finally:
+        print("🛑 Закрываем Consumer...")
+        consumer.close()
+        print("✅ Consumer закрыт.")
 
 
-def cmd_block_user_for_me(args):
-    _block_unblock_user(args, block=True)
 
-def cmd_unblock_user_for_me(args):
-    _block_unblock_user(args, block=False)
-
-def cmd_block_word(args):
-    _block_unblock_word(args, block=True)
-
-def cmd_unblock_word(args):
-    _block_unblock_word(args, block=False)
-
-# --- Парсер команд (синтаксис login(name), send_message(to,msg)) ---
-CMD_PATTERN = re.compile(r"^([a-zA-Z_]+)\((.*)\)$")
-
-def parse_command(raw: str):
-    raw = raw.strip()
-    m = CMD_PATTERN.match(raw)
-    if not m:
-        return None, []
-    name = m.group(1)
-    args_raw = m.group(2)
-    args = [a.strip() for a in args_raw.split(",") if a.strip()]
-    return name, args
-
-COMMANDS = {
-    "login": cmd_login,
-    "logout": cmd_logout,
-    "send_message": cmd_send_message,
-    "block_user_for_me": cmd_block_user_for_me,
-    "unblock_user_for_me": cmd_unblock_user_for_me,
-    "block_word": cmd_block_word,
-    "unblock_word": cmd_unblock_word,
-}
-
-# --- Обработка SIGTERM ---
+# --- Управление жизненным циклом ---
 shutdown_flag = threading.Event()
 
 def handle_sigterm(signum, frame):
@@ -275,7 +90,7 @@ def main():
         except Exception as e:
             print(f"Command error: {e}")
 
-        # producer.poll нужен, чтобы callback-ы срабатывали
+        # Обязательно: poll продюсера, чтобы callback-ы успели отработать
         producer.poll(0)
 
     flush_producer()

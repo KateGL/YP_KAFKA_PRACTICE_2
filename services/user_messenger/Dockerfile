@@ -15,5 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY service.py .
 COPY messages.py .
+COPY consts.py .
+COPY commands.py .
 
 CMD ["python", "service.py"]
