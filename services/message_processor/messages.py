@@ -9,11 +9,11 @@ class BaseMessagePayload(faust.Record):
     def to_json(self) -> str:
         return json.dumps(self.asdict())
 
-    @staticmethod
-    def from_json(data: str) -> "BaseMessagePayload":
+    @classmethod
+    def from_json(cls, data: str):
         try:
             obj = json.loads(data)
-            return BaseMessagePayload(**obj)
+            return cls(**obj)
         except Exception as e:
             raise ValueError(f"Ошибка десериализации JSON: {e}")
 

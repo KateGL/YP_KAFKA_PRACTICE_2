@@ -23,7 +23,7 @@ def delivery_report(err, msg):
         pass
     event_type = payload.get("event") if payload else "UNKNOWN"
     topic = msg.topic()
-    print(f"✅ Подтверждено: event={event_type} | топик={topic} | partition={msg.partition()} | offset={msg.offset()}")
+    # print(f"✅ Подтверждено: event={event_type} | топик={topic} | partition={msg.partition()} | offset={msg.offset()}")
 
 
 def send_event(topic: str, key: str, message: MessageForChatting):
