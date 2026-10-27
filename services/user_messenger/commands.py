@@ -106,7 +106,7 @@ def cmd_send_message(args):
     send_event(TOPIC_MESSAGES, key=current, message=payload)
     print(f"Message sent to {user_to}")
 
-# Вспомогательные команды (block/unblock) — аналогично с lock при чтении current_user
+# Вспомогательные команды (block/unblock)
 def _block_unblock_user(args: list, block: bool):
     with state_lock:
         if state.current_user is None:
